@@ -10,6 +10,9 @@ def generate_launch_description():
     window_res_x = LaunchConfiguration('window_res_x')
     window_res_y = LaunchConfiguration('window_res_y')
     rendering_quality = LaunchConfiguration('rendering_quality')
+    fast_fixed_step = LaunchConfiguration('fast_fixed_step')
+    fixed_time_step = LaunchConfiguration('fixed_time_step')
+    use_sim_time_stamps = LaunchConfiguration('use_sim_time_stamps')
        
     simulation_data_arg = DeclareLaunchArgument(
         'simulation_data',
@@ -41,12 +44,27 @@ def generate_launch_description():
         default_value = 'high'
     )
 
+    fast_fixed_step_arg = DeclareLaunchArgument(
+        'fast_fixed_step',
+        default_value = 'false'
+    )
+
+    fixed_time_step_arg = DeclareLaunchArgument(
+        'fixed_time_step',
+        default_value = '0.0'
+    )
+
+    use_sim_time_stamps_arg = DeclareLaunchArgument(
+        'use_sim_time_stamps',
+        default_value = 'false'
+    )
+
     stonefish_simulator_node = Node(
             package='stonefish_ros2',
             executable='stonefish_simulator',
             namespace='stonefish_ros2',
             name='stonefish_simulator',
-            arguments=[simulation_data, scenario_desc, simulation_rate, window_res_x, window_res_y, rendering_quality],
+            arguments=[simulation_data, scenario_desc, simulation_rate, window_res_x, window_res_y, rendering_quality, fast_fixed_step, fixed_time_step, use_sim_time_stamps],
             output='screen',
             #prefix=['xterm -e gdb -ex run --args']
     )
@@ -58,5 +76,8 @@ def generate_launch_description():
         window_res_x_arg,
         window_res_y_arg,
         rendering_quality_arg,
+        fast_fixed_step_arg,
+        fixed_time_step_arg,
+        use_sim_time_stamps_arg,
         stonefish_simulator_node
     ])

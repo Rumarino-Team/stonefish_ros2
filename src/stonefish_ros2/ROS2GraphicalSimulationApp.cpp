@@ -34,8 +34,10 @@ ROS2GraphicalSimulationApp::ROS2GraphicalSimulationApp(std::string title, std::s
 {
 }
 
-void ROS2GraphicalSimulationApp::Startup()
+void ROS2GraphicalSimulationApp::Startup(Scalar fixedTimeStep)
 {
+    autostep_ = true;
+    timeStep_ = fixedTimeStep > Scalar(0) ? fixedTimeStep : Scalar(0);
     Init();
     StartSimulation();
 }

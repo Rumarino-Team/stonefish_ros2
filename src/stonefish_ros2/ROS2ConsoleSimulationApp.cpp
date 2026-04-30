@@ -34,8 +34,10 @@ ROS2ConsoleSimulationApp::ROS2ConsoleSimulationApp(std::string title, std::strin
 {
 }
 
-void ROS2ConsoleSimulationApp::Startup()
+void ROS2ConsoleSimulationApp::Startup(Scalar fixedTimeStep)
 {
+    autostep_ = true;
+    timeStep_ = fixedTimeStep > Scalar(0) ? fixedTimeStep : Scalar(0);
     Init();
     StartSimulation();
 }

@@ -100,7 +100,7 @@ namespace sf
     class ROS2SimulationManager : public SimulationManager
     {
     public:
-        ROS2SimulationManager(Scalar stepsPerSecond, std::string scenarioFilePath, const std::shared_ptr<rclcpp::Node>& nh);
+        ROS2SimulationManager(Scalar stepsPerSecond, std::string scenarioFilePath, const std::shared_ptr<rclcpp::Node>& nh, bool useSimulationTimeStamps = false);
         virtual ~ROS2SimulationManager();
 		
         virtual void BuildScenario();
@@ -121,6 +121,7 @@ namespace sf
         bool RespawnROS2Robot(const std::string& robotName, const Transform& origin);
         void SimulationClockSleep(uint64_t us);
         uint64_t getSimulationClock() const;
+        rclcpp::Time getROSStamp() const;
         std::map<std::string, rclcpp::ServiceBase::SharedPtr>& getServices();
         std::map<std::string, rclcpp::PublisherBase::SharedPtr>& getPublishers();
         std::map<std::string, image_transport::Publisher>& getImagePublishers();
@@ -179,6 +180,7 @@ namespace sf
         std::shared_ptr<image_transport::ImageTransport> it_;
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
         std::shared_ptr<ROS2Interface> interface_;
+        bool useSimulationTimeStamps_;
         std::map<std::string, rclcpp::ServiceBase::SharedPtr> srvs_;
         std::map<std::string, rclcpp::PublisherBase::SharedPtr> pubs_;
         std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> subs_;
