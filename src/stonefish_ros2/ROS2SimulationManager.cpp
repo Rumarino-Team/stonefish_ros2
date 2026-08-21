@@ -24,6 +24,10 @@
 //
 
 #include "stonefish_ros2/ROS2SimulationManager.h"
+
+#include <chrono>
+#include <thread>
+
 #include "stonefish_ros2/ROS2ScenarioParser.h"
 #include "stonefish_ros2/ROS2Interface.h"
 
@@ -79,11 +83,16 @@ namespace sf
 {
 
 ROS2SimulationManager::ROS2SimulationManager(Scalar stepsPerSecond, std::string scenarioFilePath, const std::shared_ptr<rclcpp::Node>& nh, bool useSimulationTimeStamps)
-	: SimulationManager(stepsPerSecond, SolverType::SOLVER_SI, CollisionFilteringType::COLLISION_EXCLUSIVE), scenarioPath_(scenarioFilePath), nh_(nh), useSimulationTimeStamps_(useSimulationTimeStamps)
+	: SimulationManager(stepsPerSecond, SolverType::SOLVER_SI, CollisionFilteringType::COLLISION_EXCLUSIVE), scenarioPath_(scenarioFilePath), nh_(nh), useSimulationTimeStamps_(useSimulationTimeStamps),
+	  rtfCap_(Scalar(0)), rtfBaseSimTime_(Scalar(0)), rtfBaseWallUs_(0), rtfBaseSet_(false)
 {
     it_ = std::make_shared<image_transport::ImageTransport>(nh_);
     interface_ = std::make_shared<ROS2Interface>(nh_, useSimulationTimeStamps_);
     tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(nh_);
+
+    rtfCap_ = Scalar(nh_->declare_parameter<double>("realtime_factor_cap", 0.0));
+    if(rtfCap_ > Scalar(0))
+        RCLCPP_INFO_STREAM(nh_->get_logger(), "Simulated time capped at " << rtfCap_ << "x wall time.");
 }
 
 ROS2SimulationManager::~ROS2SimulationManager()
@@ -100,6 +109,48 @@ void ROS2SimulationManager::SimulationClockSleep(uint64_t us)
 {
     rclcpp::Duration duration(0, (uint32_t)us*1000);
     nh_->get_clock()->sleep_for(duration);
+}
+
+void ROS2SimulationManager::ThrottleToRealtimeFactorCap()
+{
+    if(rtfCap_ <= Scalar(0))
+        return;
+
+    Scalar simTime = getSimulationTime(false);
+    int64_t wallUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    if(!rtfBaseSet_)
+    {
+        rtfBaseSimTime_ = simTime;
+        rtfBaseWallUs_ = wallUs;
+        rtfBaseSet_ = true;
+        return;
+    }
+
+    Scalar simElapsed = simTime - rtfBaseSimTime_;
+    Scalar wallElapsed = Scalar(wallUs - rtfBaseWallUs_) / Scalar(1000000);
+    Scalar wallBudget = simElapsed / rtfCap_;
+
+    if(wallBudget > wallElapsed)
+    {
+        Scalar deficit = wallBudget - wallElapsed;
+        // Sleeping sub-millisecond amounts on every physics step loses more time to
+        // scheduler granularity than it asks for, which undershoots the cap. Let the
+        // debt accumulate and pay it off in one sleep.
+        if(deficit < Scalar(0.001))
+            return;
+
+        std::this_thread::sleep_for(
+            std::chrono::microseconds((int64_t)(deficit * Scalar(1000000))));
+    }
+    else
+    {
+        // Already slower than the cap. Re-baseline so a slow patch does not bank
+        // credit that would let the next steps sprint past the cap.
+        rtfBaseSimTime_ = simTime;
+        rtfBaseWallUs_ = wallUs;
+    }
 }
 
 rclcpp::Time ROS2SimulationManager::getROSStamp() const
@@ -835,6 +886,8 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             }
         }
     }
+
+    ThrottleToRealtimeFactorCap();
 }
 
 void ROS2SimulationManager::ColorCameraImageReady(ColorCamera* cam)

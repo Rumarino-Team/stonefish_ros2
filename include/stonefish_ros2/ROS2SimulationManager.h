@@ -121,6 +121,10 @@ namespace sf
         bool RespawnROS2Robot(const std::string& robotName, const Transform& origin);
         void SimulationClockSleep(uint64_t us);
         uint64_t getSimulationClock() const;
+        //! Sleeps so simulated time advances at most realtime_factor_cap times wall
+        //! time. Only affects fixed-step stepping; real-time stepping is already
+        //! pinned to 1x by the wall clock.
+        void ThrottleToRealtimeFactorCap();
         rclcpp::Time getROSStamp() const;
         std::map<std::string, rclcpp::ServiceBase::SharedPtr>& getServices();
         std::map<std::string, rclcpp::PublisherBase::SharedPtr>& getPublishers();
@@ -181,6 +185,10 @@ namespace sf
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
         std::shared_ptr<ROS2Interface> interface_;
         bool useSimulationTimeStamps_;
+        Scalar rtfCap_;
+        Scalar rtfBaseSimTime_;
+        int64_t rtfBaseWallUs_;
+        bool rtfBaseSet_;
         std::map<std::string, rclcpp::ServiceBase::SharedPtr> srvs_;
         std::map<std::string, rclcpp::PublisherBase::SharedPtr> pubs_;
         std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> subs_;

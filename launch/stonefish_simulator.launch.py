@@ -1,4 +1,5 @@
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -13,6 +14,7 @@ def generate_launch_description():
     fast_fixed_step = LaunchConfiguration('fast_fixed_step')
     fixed_time_step = LaunchConfiguration('fixed_time_step')
     use_sim_time_stamps = LaunchConfiguration('use_sim_time_stamps')
+    realtime_factor_cap = LaunchConfiguration('realtime_factor_cap')
        
     simulation_data_arg = DeclareLaunchArgument(
         'simulation_data',
@@ -59,12 +61,20 @@ def generate_launch_description():
         default_value = 'false'
     )
 
+    realtime_factor_cap_arg = DeclareLaunchArgument(
+        'realtime_factor_cap',
+        default_value = '0.0'
+    )
+
     stonefish_simulator_node = Node(
             package='stonefish_ros2',
             executable='stonefish_simulator',
             namespace='stonefish_ros2',
             name='stonefish_simulator',
             arguments=[simulation_data, scenario_desc, simulation_rate, window_res_x, window_res_y, rendering_quality, fast_fixed_step, fixed_time_step, use_sim_time_stamps],
+            parameters=[{
+                'realtime_factor_cap': ParameterValue(realtime_factor_cap, value_type=float),
+            }],
             output='screen',
             #prefix=['xterm -e gdb -ex run --args']
     )
@@ -79,5 +89,6 @@ def generate_launch_description():
         fast_fixed_step_arg,
         fixed_time_step_arg,
         use_sim_time_stamps_arg,
+        realtime_factor_cap_arg,
         stonefish_simulator_node
     ])
