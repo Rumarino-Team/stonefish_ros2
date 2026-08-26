@@ -36,7 +36,7 @@ namespace sf
     {
     public:
         ROS2ConsoleSimulationApp(std::string title, std::string dataPath, ROS2SimulationManager* sim);
-        void Startup();
+        void Startup(Scalar fixedTimeStep = Scalar(0));
         void Shutdown();
     };
 }

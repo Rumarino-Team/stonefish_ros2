@@ -30,6 +30,12 @@
 
 using namespace std::chrono_literals;
 
+static bool parse_bool_arg(const char* value)
+{
+    std::string s(value);
+    return s == "true" || s == "1" || s == "yes" || s == "on";
+}
+
 class StonefishNode : public rclcpp::Node
 {
 public:
@@ -37,13 +43,15 @@ public:
                            const std::string& dataPath, 
                            const sf::RenderSettings& s, 
                            const sf::HelperSettings& h,
-                           sf::Scalar rate) 
+                           sf::Scalar rate,
+                           sf::Scalar fixedTimeStep,
+                           bool useSimulationTimeStamps) 
                            : Node("stonefish_simulator")
     {   
-        sf::ROS2SimulationManager* manager = new sf::ROS2SimulationManager(rate, scenarioPath, std::shared_ptr<rclcpp::Node>(this));
+        sf::ROS2SimulationManager* manager = new sf::ROS2SimulationManager(rate, scenarioPath, std::shared_ptr<rclcpp::Node>(this), useSimulationTimeStamps);
         app_ = std::shared_ptr<sf::ROS2GraphicalSimulationApp>(new sf::ROS2GraphicalSimulationApp("Stonefish Simulator", 
                                                                                                  dataPath, s, h, manager));
-        app_->Startup();
+        app_->Startup(fixedTimeStep);
         tickTimer_ = this->create_wall_timer(16667us, std::bind(&sf::ROS2GraphicalSimulationApp::Tick, app_));
     };
 
@@ -67,8 +75,20 @@ int main(int argc, char **argv)
     std::string dataPath = std::string(argv[1]) + "/";
     std::string scenarioPath(argv[2]);
     sf::Scalar rate = atof(argv[3]);
+    bool fastFixedStep = argc > 7 ? parse_bool_arg(argv[7]) : false;
+    sf::Scalar fixedTimeStep = argc > 8 ? atof(argv[8]) : sf::Scalar(0);
+    bool useSimulationTimeStamps = argc > 9 ? parse_bool_arg(argv[9]) : fastFixedStep;
 
-	sf::RenderSettings s;
+    if(fastFixedStep && fixedTimeStep <= sf::Scalar(0))
+    {
+        fixedTimeStep = sf::Scalar(1) / rate;
+    }
+    if(!fastFixedStep)
+    {
+        fixedTimeStep = sf::Scalar(0);
+    }
+
+    sf::RenderSettings s;
     s.windowW = atoi(argv[4]);
     s.windowH = atoi(argv[5]);
 
@@ -111,7 +131,7 @@ int main(int argc, char **argv)
     h.showForces = false;
 	
     // Start simulation
-    std::shared_ptr<StonefishNode> node(new StonefishNode(scenarioPath, dataPath, s, h, rate));
+    std::shared_ptr<StonefishNode> node(new StonefishNode(scenarioPath, dataPath, s, h, rate, fixedTimeStep, useSimulationTimeStamps));
     rclcpp::spin(node);
     return 0;
 }

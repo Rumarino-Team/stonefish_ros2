@@ -24,6 +24,10 @@
 //
 
 #include "stonefish_ros2/ROS2SimulationManager.h"
+
+#include <chrono>
+#include <thread>
+
 #include "stonefish_ros2/ROS2ScenarioParser.h"
 #include "stonefish_ros2/ROS2Interface.h"
 
@@ -78,12 +82,17 @@ using namespace std::placeholders;
 namespace sf
 {
 
-ROS2SimulationManager::ROS2SimulationManager(Scalar stepsPerSecond, std::string scenarioFilePath, const std::shared_ptr<rclcpp::Node>& nh)
-	: SimulationManager(stepsPerSecond, SolverType::SOLVER_SI, CollisionFilteringType::COLLISION_EXCLUSIVE), scenarioPath_(scenarioFilePath), nh_(nh)
+ROS2SimulationManager::ROS2SimulationManager(Scalar stepsPerSecond, std::string scenarioFilePath, const std::shared_ptr<rclcpp::Node>& nh, bool useSimulationTimeStamps)
+	: SimulationManager(stepsPerSecond, SolverType::SOLVER_SI, CollisionFilteringType::COLLISION_EXCLUSIVE), scenarioPath_(scenarioFilePath), nh_(nh), useSimulationTimeStamps_(useSimulationTimeStamps),
+	  rtfCap_(Scalar(0)), rtfBaseSimTime_(Scalar(0)), rtfBaseWallUs_(0), rtfBaseSet_(false)
 {
     it_ = std::make_shared<image_transport::ImageTransport>(nh_);
-    interface_ = std::make_shared<ROS2Interface>(nh_);
+    interface_ = std::make_shared<ROS2Interface>(nh_, useSimulationTimeStamps_);
     tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(nh_);
+
+    rtfCap_ = Scalar(nh_->declare_parameter<double>("realtime_factor_cap", 0.0));
+    if(rtfCap_ > Scalar(0))
+        RCLCPP_INFO_STREAM(nh_->get_logger(), "Simulated time capped at " << rtfCap_ << "x wall time.");
 }
 
 ROS2SimulationManager::~ROS2SimulationManager()
@@ -92,7 +101,7 @@ ROS2SimulationManager::~ROS2SimulationManager()
 
 uint64_t ROS2SimulationManager::getSimulationClock() const
 {
-    rclcpp::Time now = nh_->get_clock()->now(); // Using nh_->get_clock()->now() is WRONG beacause use_sim_time will not work!
+    rclcpp::Time now = nh_->get_clock()->now();
     return now.nanoseconds()/1000;
 }
 
@@ -100,6 +109,57 @@ void ROS2SimulationManager::SimulationClockSleep(uint64_t us)
 {
     rclcpp::Duration duration(0, (uint32_t)us*1000);
     nh_->get_clock()->sleep_for(duration);
+}
+
+void ROS2SimulationManager::ThrottleToRealtimeFactorCap()
+{
+    if(rtfCap_ <= Scalar(0))
+        return;
+
+    Scalar simTime = getSimulationTime(false);
+    int64_t wallUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    if(!rtfBaseSet_)
+    {
+        rtfBaseSimTime_ = simTime;
+        rtfBaseWallUs_ = wallUs;
+        rtfBaseSet_ = true;
+        return;
+    }
+
+    Scalar simElapsed = simTime - rtfBaseSimTime_;
+    Scalar wallElapsed = Scalar(wallUs - rtfBaseWallUs_) / Scalar(1000000);
+    Scalar wallBudget = simElapsed / rtfCap_;
+
+    if(wallBudget > wallElapsed)
+    {
+        Scalar deficit = wallBudget - wallElapsed;
+        // Sleeping sub-millisecond amounts on every physics step loses more time to
+        // scheduler granularity than it asks for, which undershoots the cap. Let the
+        // debt accumulate and pay it off in one sleep.
+        if(deficit < Scalar(0.001))
+            return;
+
+        std::this_thread::sleep_for(
+            std::chrono::microseconds((int64_t)(deficit * Scalar(1000000))));
+    }
+    else
+    {
+        // Already slower than the cap. Re-baseline so a slow patch does not bank
+        // credit that would let the next steps sprint past the cap.
+        rtfBaseSimTime_ = simTime;
+        rtfBaseWallUs_ = wallUs;
+    }
+}
+
+rclcpp::Time ROS2SimulationManager::getROSStamp() const
+{
+    if(!useSimulationTimeStamps_)
+        return nh_->get_clock()->now();
+
+    int64_t nanoseconds = static_cast<int64_t>(getSimulationTime(false) * Scalar(1e9));
+    return rclcpp::Time(nanoseconds, RCL_ROS_TIME);
 }
 
 std::map<std::string, rclcpp::ServiceBase::SharedPtr>& ROS2SimulationManager::getServices()
@@ -392,7 +452,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
     for(size_t i=0; i<rosRobots_.size(); ++i)
     {
         if(rosRobots_[i]->publishBaseLinkTransform_)
-            interface_->PublishTF(tf_, rosRobots_[i]->robot_->getTransform(), nh_->get_clock()->now(), "world_ned", rosRobots_[i]->robot_->getName() + "/base_link");
+            interface_->PublishTF(tf_, rosRobots_[i]->robot_->getTransform(), getROSStamp(), "world_ned", rosRobots_[i]->robot_->getName() + "/base_link");
     }
     
     //////////////////////////////////////SERVOS(JOINTS)/////////////////////////////////////////
@@ -403,7 +463,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             unsigned int aID = 0;
             Actuator* actuator;
             sensor_msgs::msg::JointState msg;
-            msg.header.stamp = nh_->get_clock()->now();
+            msg.header.stamp = getROSStamp();
             msg.header.frame_id = rosRobots_[i]->robot_->getName();
             
             while((actuator = rosRobots_[i]->robot_->getActuator(aID++)) != nullptr)
@@ -428,7 +488,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             unsigned int aID = 0;
             Actuator* actuator;
             sensor_msgs::msg::JointState msg;
-            msg.header.stamp = nh_->get_clock()->now();
+            msg.header.stamp = getROSStamp();
             msg.header.frame_id = rosRobots_[i]->robot_->getName();
             
             while((actuator = rosRobots_[i]->robot_->getActuator(aID++)) != nullptr)
@@ -453,7 +513,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             unsigned int aID = 0;
             Actuator* actuator;
             sensor_msgs::msg::JointState msg;
-            msg.header.stamp = nh_->get_clock()->now();
+            msg.header.stamp = getROSStamp();
             msg.header.frame_id = rosRobots_[i]->robot_->getName();
             
             while((actuator = rosRobots_[i]->robot_->getActuator(aID++)) != nullptr)
@@ -480,7 +540,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             unsigned int thID = 0;
             Actuator* actuator;
             stonefish_ros2::msg::ThrusterState msg;
-            msg.header.stamp = nh_->get_clock()->now();
+            msg.header.stamp = getROSStamp();
             msg.header.frame_id = rosRobots_[i]->robot_->getName();
             msg.setpoint.resize(rosRobots_[i]->thrusterSetpoints_.size());
             msg.rpm.resize(rosRobots_[i]->thrusterSetpoints_.size());
@@ -545,7 +605,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     if(it != pubs_.end())
                     {
                         geometry_msgs::msg::WrenchStamped msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = push->getName();
                         msg.wrench.force.x = push->getForce();
                         std::static_pointer_cast<rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>>(it->second)->publish(msg);
@@ -565,7 +625,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     if(it != pubs_.end())
                     {
                         geometry_msgs::msg::WrenchStamped msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = th->getName();
                         msg.wrench.force.x = th->getThrust();
                         msg.wrench.torque.x = th->getTorque();
@@ -577,7 +637,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     {
                         //Publish propeller rotation for visualization
                         sensor_msgs::msg::JointState msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = th->getName();
                         msg.name.push_back(th->getName()+"/propeller");
                         msg.position.push_back(th->getAngle()/Scalar(100)); // Scaled for visualisation 
@@ -600,7 +660,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     if(it != pubs_.end())
                     {
                         geometry_msgs::msg::WrenchStamped msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = th->getName();
                         msg.wrench.force.x = th->getThrust();
                         msg.wrench.torque.x = th->getTorque();
@@ -612,7 +672,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     {
                         //Publish propeller rotation for visualization
                         sensor_msgs::msg::JointState msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = th->getName();
                         msg.name.push_back(th->getName()+"/propeller");
                         msg.position.push_back(th->getAngle());  
@@ -633,7 +693,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                     if(it != pubs_.end())
                     {
                         geometry_msgs::msg::WrenchStamped msg;
-                        msg.header.stamp = nh_->get_clock()->now();
+                        msg.header.stamp = getROSStamp();
                         msg.header.frame_id = prop->getName();
                         msg.wrench.force.x = prop->getThrust();
                         msg.wrench.torque.x = prop->getTorque();
@@ -742,7 +802,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             size_t lID = 0;
             SolidEntity* link;
             stonefish_ros2::msg::DebugPhysics msg;
-            msg.header.stamp = nh_->get_clock()->now();
+            msg.header.stamp = getROSStamp();
             
             auto debugPub = std::static_pointer_cast<rclcpp::Publisher<stonefish_ros2::msg::DebugPhysics>>(
                 pubs_.at(r->getName() + "/debug/physics")
@@ -826,13 +886,15 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
             }
         }
     }
+
+    ThrottleToRealtimeFactorCap();
 }
 
 void ROS2SimulationManager::ColorCameraImageReady(ColorCamera* cam)
 {
     //Fill in the image message
     sensor_msgs::msg::Image::SharedPtr img = cameraMsgPrototypes_[cam->getName()].first;
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (uint8_t*)cam->getImageDataPointer(), img->step * img->height);
 
     //Fill in the info message
@@ -848,7 +910,7 @@ void ROS2SimulationManager::DepthCameraImageReady(DepthCamera* cam)
 {
     //Fill in the image message
     sensor_msgs::msg::Image::SharedPtr img = cameraMsgPrototypes_[cam->getName()].first;
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (float*)cam->getImageDataPointer(), img->step * img->height);
 
     //Fill in the info message
@@ -864,7 +926,7 @@ void ROS2SimulationManager::ThermalCameraImageReady(ThermalCamera* cam)
 {
     //Fill in the image message
     sensor_msgs::msg::Image::SharedPtr img = std::get<0>(dualImageCameraMsgPrototypes_[cam->getName()]);
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (float*)cam->getImageDataPointer(), img->step * img->height);
 
     //Fill in the info message
@@ -886,7 +948,7 @@ void ROS2SimulationManager::OpticalFlowCameraImageReady(OpticalFlowCamera* cam)
 {
     //Fill in the image message
     sensor_msgs::msg::Image::SharedPtr img = std::get<0>(dualImageCameraMsgPrototypes_[cam->getName()]);
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (float*)cam->getImageDataPointer(), img->step * img->height);
 
     //Fill in the info message
@@ -908,7 +970,7 @@ void ROS2SimulationManager::SegmentationCameraImageReady(SegmentationCamera* cam
 {
     //Fill in the image message
     sensor_msgs::msg::Image::SharedPtr img = std::get<0>(dualImageCameraMsgPrototypes_[cam->getName()]);
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (uint16_t*)cam->getImageDataPointer(), img->step * img->height);
 
     //Fill in the info message
@@ -940,7 +1002,7 @@ void ROS2SimulationManager::FLSScanReady(FLS* fls)
 {
     //Fill in the data message
     sensor_msgs::msg::Image::SharedPtr img = sonarMsgPrototypes_[fls->getName()].first;
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (uint8_t*)fls->getImageDataPointer(), img->step * img->height);
 
     //Fill in the display message
@@ -958,7 +1020,7 @@ void ROS2SimulationManager::SSSScanReady(SSS* sss)
 {
     //Fill in the data message
     sensor_msgs::msg::Image::SharedPtr img = sonarMsgPrototypes_[sss->getName()].first;
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (uint8_t*)sss->getImageDataPointer(), img->step * img->height);
 
     //Fill in the display message
@@ -975,7 +1037,7 @@ void ROS2SimulationManager::MSISScanReady(MSIS* msis)
 {
     //Fill in the data message
     sensor_msgs::msg::Image::SharedPtr img = sonarMsgPrototypes_[msis->getName()].first;
-    img->header.stamp = nh_->get_clock()->now();
+    img->header.stamp = getROSStamp();
     memcpy(img->data.data(), (uint8_t*)msis->getImageDataPointer(), img->step * img->height);
 
     //Fill in the display message

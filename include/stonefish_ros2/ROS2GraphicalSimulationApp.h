@@ -36,7 +36,7 @@ namespace sf
     {
     public:
         ROS2GraphicalSimulationApp(std::string title, std::string dataPath, RenderSettings s, HelperSettings h, ROS2SimulationManager* sim);
-        void Startup();
+        void Startup(Scalar fixedTimeStep = Scalar(0));
         void Tick();
     };
 }
